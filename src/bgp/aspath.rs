@@ -841,6 +841,17 @@ impl<Octs> Segment<Octs> {
     fn new(stype: SegmentType, four_byte_asns: bool, octets: Octs) -> Self {
         Segment { stype, four_byte_asns, octets }
     }
+
+    /// The type of this segment.
+    ///
+    /// Callers implementing the Decision Process need this to tell an AS_SET
+    /// from an AS_CONFED_SET or AS_CONFED_SEQUENCE: RFC 5065 section 5.3
+    /// excludes confederation segments from the AS_PATH length, and derives
+    /// the neighbor AS from the leftmost AS_SEQUENCE past them, while an
+    /// AS_SET counts as one hop like any other.
+    pub const fn stype(&self) -> SegmentType {
+        self.stype
+    }
 }
 
 impl Segment<Vec<u8>> {
