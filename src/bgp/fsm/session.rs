@@ -2342,6 +2342,17 @@ impl NegotiatedConfig {
         self.remote_addr
     }
 
+    /// The peer's BGP Identifier, from the OPEN it sent.
+    ///
+    /// Needed by the Decision Process: RFC 4271 section 9.1.2.2 step f
+    /// prefers the route advertised by the speaker with the lowest BGP
+    /// Identifier, and an application that terminates its own sessions has no
+    /// other way to learn it. Note RFC 6286: this is an opaque four-octet
+    /// value, not necessarily an IPv4 address.
+    pub const fn remote_bgp_id(&self) -> [u8; 4] {
+        self.remote_bgp_id
+    }
+
     pub fn local_capabilities(&self) -> &[u8] {
         self.local_capabilities.as_ref()
     }
