@@ -18,7 +18,7 @@ bytes       = { version = "1.2", optional = true }
 chrono      = { version = "0.4.20", optional = true, default-features = false }
 const-str   = { version = "0.6", optional = true, features = ["case"] }
 log         = { version = "0.4.4", optional = true }
-octseq      = { version = "0.5", optional = true, features = ["bytes"] }
+octseq      = { git = "https://github.com/FastNetMon/octseq.git", rev = "837ea258a7ff0af2e914e2eedc6a1a34cb657fce", optional = true, features = ["bytes"] }
 paste       = { version = "1" }
 serde       = { version = "1.0.165", optional = true, features = ["derive"] }
 tokio       = { version = ">=1.24.2", optional = true, features = ["io-util", "macros", "net", "sync", "rt-multi-thread", "time"] }
