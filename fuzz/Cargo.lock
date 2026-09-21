@@ -276,7 +276,7 @@ dependencies = [
 [[package]]
 name = "inetnum"
 version = "0.1.1"
-source = "git+https://github.com/FastNetMon/inetnum.git?tag=v0.1.1#1f8a285aff36d85eeb345e59bcbe9b9e552eec5d"
+source = "git+https://github.com/FastNetMon/inetnum.git?tag=v0.1.1-fnm1#c2ec77cea59019178c91facb28eaf9a0d5ff339b"
 dependencies = [
  "arbitrary",
  "serde",
@@ -349,7 +349,7 @@ dependencies = [
 [[package]]
 name = "octseq"
 version = "0.5.2"
-source = "git+https://github.com/FastNetMon/octseq.git?rev=837ea258a7ff0af2e914e2eedc6a1a34cb657fce#837ea258a7ff0af2e914e2eedc6a1a34cb657fce"
+source = "git+https://github.com/FastNetMon/octseq.git?rev=e3401f9815887978fcfe7989dcff7e8d36c49473#e3401f9815887978fcfe7989dcff7e8d36c49473"
 dependencies = [
  "bytes",
 ]

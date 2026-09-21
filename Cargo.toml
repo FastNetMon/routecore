@@ -12,13 +12,13 @@ keywords = ["routing", "bgp"]
 license = "BSD-3-Clause"
 
 [dependencies]
-inetnum     = { git = "https://github.com/FastNetMon/inetnum.git", tag = "v0.1.1", features = ["arbitrary", "serde"] }
+inetnum     = { git = "https://github.com/FastNetMon/inetnum.git", tag = "v0.1.1-fnm1", features = ["arbitrary", "serde"] }
 arbitrary   = { version = "1.3.1", optional = true, features = ["derive"] }
 bytes       = { version = "1.2", optional = true }
 chrono      = { version = "0.4.20", optional = true, default-features = false }
 const-str   = { version = "0.6", optional = true, features = ["case"] }
 log         = { version = "0.4.4", optional = true }
-octseq      = { git = "https://github.com/FastNetMon/octseq.git", rev = "837ea258a7ff0af2e914e2eedc6a1a34cb657fce", optional = true, features = ["bytes"] }
+octseq      = { git = "https://github.com/FastNetMon/octseq.git", rev = "e3401f9815887978fcfe7989dcff7e8d36c49473", optional = true, features = ["bytes"] }
 paste       = { version = "1" }
 serde       = { version = "1.0.165", optional = true, features = ["derive"] }
 tokio       = { version = ">=1.24.2", optional = true, features = ["io-util", "macros", "net", "sync", "rt-multi-thread", "time"] }
