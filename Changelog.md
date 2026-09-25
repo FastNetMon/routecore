@@ -9,6 +9,8 @@ Released yyyy-mm-dd.
 
 ## Bug fixes
 
+* Accept 16-byte and 32-byte IPv6 next hops for IPv4 unicast MP_REACH_NLRI.
+
 ## New
 
 ## Other changes
