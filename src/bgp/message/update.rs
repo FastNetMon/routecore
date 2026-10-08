@@ -1155,6 +1155,25 @@ impl PduParseInfo {
         Self { four_octet_asns: FourOctetAsns(false), pdu_addpaths: PduAddpaths::default() }
     }
 
+    /// Creates parse info from the ASN and independent per-PDU ADD-PATH flags.
+    ///
+    /// Useful when restoring context persisted alongside raw path attributes.
+    pub fn from_flags(
+        four_octet_asns: bool,
+        conventional_addpath: bool,
+        mp_reach_addpath: bool,
+        mp_unreach_addpath: bool,
+    ) -> Self {
+        Self {
+            four_octet_asns: FourOctetAsns(four_octet_asns),
+            pdu_addpaths: PduAddpaths {
+                conventional: conventional_addpath,
+                mp_reach: mp_reach_addpath,
+                mp_unreach: mp_unreach_addpath,
+            },
+        }
+    }
+
     /// Creates a `PduParseInfo` from a `SessionConfig` and address families.
     ///
     /// This constructor takes two optional address families, describing the

@@ -1524,7 +1524,7 @@ impl Attribute for MpReachNextHop {
     fn validate<Octs: Octets>(
         _flags: Flags,
         parser: &mut Parser<'_, Octs>,
-        ppi: PduParseInfo
+        _ppi: PduParseInfo
     )
         -> Result<(), ParseError> {
         
@@ -1532,12 +1532,10 @@ impl Attribute for MpReachNextHop {
         let safi= parser.parse_u8()?;
         let afisafi = AfiSafiType::from((afi, safi));
         let _next_hop = crate::bgp::types::NextHop::parse(parser, afisafi)?;
-        if parser.parse_u8()? != 0 {
-            return Err(ParseError::form_error(
-                "MP_REACH_NLRI reserved byte is non-zero"
-            ));
-        }
-        validate_mp_nlri(*parser, afisafi, ppi.mp_reach_addpath())
+        // This attribute retains only the next hop, just like parse below.
+        // Trailing reserved/NLRI bytes belong to the full MP_REACH attribute
+        // and may require ADD-PATH context unavailable to stored attributes.
+        Ok(())
     }
 
     fn parse<'a, Octs: 'a + Octets>(parser: &mut Parser<'a, Octs>, _ppi: PduParseInfo) 
@@ -2384,6 +2382,30 @@ mod tests {
     use crate::bgp::communities::Wellknown;
     use crate::bgp::aspath::HopPath;
     use crate::bgp::types::OriginType;
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn mp_reach_next_hop_json_with_addpath_nlri() {
+        let mut value = vec![0, 1, 1, 16];
+        value.extend_from_slice(&"2001:db8::3".parse::<std::net::Ipv6Addr>().unwrap().octets());
+        // Check the retained prefix, ordinary NLRI, and ADD-PATH NLRI whose
+        // path ID would be an invalid prefix length without ADD-PATH context.
+        for tail in [vec![], vec![0, 24, 192, 0, 2], vec![0, 255, 0, 0, 1, 24, 192, 0, 2]] {
+            let mut raw = vec![0x80, 14, (value.len() + tail.len()) as u8];
+            raw.extend_from_slice(&value);
+            raw.extend_from_slice(&tail);
+            let mut parser = Parser::from_ref(&raw);
+            let attr = WireformatPathAttribute::parse(&mut parser, PduParseInfo::modern())
+                .unwrap().to_owned().unwrap();
+            assert_eq!(serde_json::to_value(attr).unwrap(), serde_json::json!({
+                "mpReachNlri": {"nextHop": {"ipv6Unicast": "2001:db8::3"}}
+            }));
+        }
+        // Next-hop truncation still fails validation.
+        let truncated = &value[..value.len() - 1];
+        let mut parser = Parser::from_ref(&truncated);
+        assert!(MpReachNextHop::validate(Flags(0x80), &mut parser, PduParseInfo::modern()).is_err());
+    }
 
     #[test]
     fn wireformat_to_owned_and_back() {

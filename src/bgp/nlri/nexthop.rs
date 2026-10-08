@@ -223,7 +223,7 @@ mod tests {
             }
         }
         assert_eq!(
-            NextHop::parse(&mut Parser::from_ref(&[4, 192, 0, 2, 1][..]), AfiSafi::Ipv6Unicast),
+            NextHop::parse(&mut Parser::from_ref(&&[4, 192, 0, 2, 1][..]), AfiSafi::Ipv6Unicast),
             Err(ParseError::Unsupported),
         );
     }
