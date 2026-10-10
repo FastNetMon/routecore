@@ -97,8 +97,7 @@ impl NextHop {
 
             Ipv4Multicast |
                 Ipv4RouteTarget |
-                L2VpnVpls |
-                L2VpnEvpn
+                L2VpnVpls
             => {
                 match len {
                     4 => NextHop::Unicast(parse_ipv4addr(parser)?.into()),
@@ -128,7 +127,8 @@ impl NextHop {
             }
             // RFC4684: the nexthop for MPLS can be of the other AFI than the
             // NLRI themselves are.
-            Ipv4MplsUnicast | Ipv6MplsUnicast => {
+            // RFC7432: EVPN next hops are the IPv4 or IPv6 address of the PE.
+            Ipv4MplsUnicast | Ipv6MplsUnicast | L2VpnEvpn => {
                 match len {
                     4 => NextHop::Unicast(parse_ipv4addr(parser)?.into()),
                     16 => NextHop::Unicast(parse_ipv6addr(parser)?.into()),
@@ -176,6 +176,47 @@ impl NextHop {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn evpn_next_hops() {
+        for ip in ["192.0.2.1", "2001:db8::1"] {
+            let ip: IpAddr = ip.parse().unwrap();
+            let bytes = match ip {
+                IpAddr::V4(ip) => ip.octets().to_vec(),
+                IpAddr::V6(ip) => ip.octets().to_vec(),
+            };
+            let mut wire = vec![bytes.len() as u8];
+            wire.extend_from_slice(&bytes);
+            wire.push(0xab);
+            let mut parser = Parser::from_ref(&wire);
+            assert_eq!(NextHop::parse(&mut parser, AfiSafi::L2VpnEvpn),
+                Ok(NextHop::Unicast(ip)));
+            assert_eq!(parser.parse_u8().unwrap(), 0xab);
+        }
+    }
+
+    #[test]
+    fn evpn_invalid_next_hops() {
+        for len in 0..=255u8 {
+            if [4, 16].contains(&len) {
+                for available in 0..usize::from(len) {
+                    let mut wire = vec![len];
+                    wire.resize(1 + available, 0);
+                    assert_eq!(
+                        NextHop::parse(&mut Parser::from_ref(&wire), AfiSafi::L2VpnEvpn),
+                        Err(ParseError::ShortInput),
+                    );
+                }
+            } else {
+                let mut wire = vec![len];
+                wire.resize(1 + usize::from(len), 0);
+                assert_eq!(
+                    NextHop::parse(&mut Parser::from_ref(&wire), AfiSafi::L2VpnEvpn),
+                    Err(ParseError::Unsupported),
+                );
+            }
+        }
+    }
 
     #[test]
     fn ipv4_unicast_next_hop_lengths() {
