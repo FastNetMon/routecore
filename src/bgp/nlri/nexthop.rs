@@ -15,6 +15,8 @@ use super::afisafi::AfiSafiType as AfiSafi;
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))] 
 pub enum NextHop {
+    /// Composes like `Unicast`. Never produced when parsing, as the wire
+    /// format does not distinguish the two.
     Multicast(IpAddr),
     #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))] 
     Ipv6LL{global: Ipv6Addr, link_local: Ipv6Addr}, // is this always unicast?
@@ -39,8 +41,10 @@ impl NextHop {
         match afisafi {
             Ipv4Unicast => Self::Unicast(Ipv4Addr::from(0).into()),
             Ipv6Unicast => Self::Unicast(Ipv6Addr::from(0).into()),
-            Ipv4Multicast => Self::Multicast(Ipv4Addr::from(0).into()),
-            Ipv6Multicast => Self::Multicast(Ipv6Addr::from(0).into()),
+            // On the wire a multicast next hop is no different from a
+            // unicast one, and `parse` yields `Unicast` for these families.
+            Ipv4Multicast => Self::Unicast(Ipv4Addr::from(0).into()),
+            Ipv6Multicast => Self::Unicast(Ipv6Addr::from(0).into()),
 
             Ipv4MplsUnicast => Self::Unicast(Ipv4Addr::from(0).into()),
             Ipv6MplsUnicast => Self::Unicast(Ipv6Addr::from(0).into()),
@@ -83,83 +87,125 @@ impl std::fmt::Display for NextHop {
 
 //--- NextHop in MP_REACH_NLRI -----------------------------------------------
 impl NextHop {
+    /// Parses the length-prefixed Next Hop field of an MP_REACH_NLRI.
+    ///
+    /// The Next Hop length selects the encoding. For the IPv4 families
+    /// covered by RFC 8950 that includes IPv6 forms, so the result for e.g.
+    /// [`AfiSafi::Ipv4Unicast`] is not necessarily an IPv4 address.
+    ///
+    /// This function has no session context: it accepts every encoding that
+    /// is valid for `afisafi`. Whether an IPv6 next hop for an IPv4 family
+    /// was negotiated (RFC 8950 section 4) is checked when parsing an UPDATE
+    /// with a [`SessionConfig`], see
+    /// [`SessionConfig::restrict_extended_next_hop`].
+    ///
+    /// The wire format does not distinguish unicast from multicast next
+    /// hops, so `NextHop::Multicast` is never returned.
+    ///
+    /// [`SessionConfig`]: crate::bgp::message::SessionConfig
+    /// [`SessionConfig::restrict_extended_next_hop`]:
+    ///     crate::bgp::message::SessionConfig::restrict_extended_next_hop
     pub fn parse<R: Octets>(parser: &mut Parser<'_, R>, afisafi: AfiSafi)
         -> Result<Self, ParseError>
     {
         use AfiSafi::*;
         let len = parser.parse_u8()?;
 
-        macro_rules! error {
-            () => { return  Err(ParseError::Unsupported) }
+        match afisafi {
+            // RFC 8950 section 3: the next-hop length selects IPv4 (4) or
+            // IPv6 (16, or 32 with a link-local address).
+            Ipv4Unicast | Ipv4Multicast | Ipv4MplsUnicast => {
+                Self::parse_plain(parser, len, &[4, 16, 32])
+            }
+            Ipv4RouteTarget | L2VpnVpls => {
+                Self::parse_plain(parser, len, &[4])
+            }
+            // RFC 7432 section 9: the IPv4 or IPv6 address of the PE.
+            L2VpnEvpn => Self::parse_plain(parser, len, &[4, 16]),
+            // RFC 2545 section 3.
+            Ipv6Unicast | Ipv6Multicast => {
+                Self::parse_plain(parser, len, &[16, 32])
+            }
+            // RFC 8277 with RFC 2545 next hops. An IPv4 next hop is not
+            // standardised for this family (6PE, RFC 4798, uses an
+            // IPv4-mapped IPv6 address) but is accepted for compatibility.
+            Ipv6MplsUnicast => {
+                Self::parse_plain(parser, len, &[4, 16, 32])
+            }
+            // RFC 4364 section 4.3.2, and RFC 8950 section 3 for the IPv6
+            // forms.
+            Ipv4MplsVpnUnicast => Self::parse_vpn(parser, len, &[12, 24, 48]),
+            // RFC 4659 section 3.2.1.
+            Ipv6MplsVpnUnicast => Self::parse_vpn(parser, len, &[24, 48]),
+
+            Ipv4FlowSpec | Ipv6FlowSpec => Ok(Self::Empty),
+
+            AfiSafi::Unsupported(_, _) => Err(ParseError::Unsupported),
         }
+    }
 
-        let res = match afisafi {
+    /// Returns whether `len` is an IPv6 Next Hop length for an IPv4 family.
+    ///
+    /// These are the encodings of RFC 8950, which require the Extended Next
+    /// Hop Encoding capability for `afisafi`.
+    pub(crate) fn is_extended_len(afisafi: AfiSafi, len: u8) -> bool {
+        use AfiSafi::*;
+        match afisafi {
+            Ipv4Unicast | Ipv4Multicast | Ipv4MplsUnicast => {
+                matches!(len, 16 | 32)
+            }
+            Ipv4MplsVpnUnicast => matches!(len, 24 | 48),
+            _ => false,
+        }
+    }
 
-            Ipv4Multicast |
-                Ipv4RouteTarget |
-                L2VpnVpls
-            => {
-                match len {
-                    4 => NextHop::Unicast(parse_ipv4addr(parser)?.into()),
-                    _ => error!()
-                }
+    /// Parses a next hop without Route Distinguisher.
+    fn parse_plain<R: Octets>(
+        parser: &mut Parser<'_, R>,
+        len: u8,
+        allowed: &[u8],
+    ) -> Result<Self, ParseError> {
+        if !allowed.contains(&len) {
+            return Err(ParseError::Unsupported);
+        }
+        match len {
+            4 => Ok(Self::Unicast(parse_ipv4addr(parser)?.into())),
+            16 => Ok(Self::Unicast(parse_ipv6addr(parser)?.into())),
+            32 => {
+                let global = parse_ipv6addr(parser)?;
+                let second = parse_ipv6addr(parser)?;
+                Ok(match link_local(second) {
+                    Some(link_local) => Self::Ipv6LL { global, link_local },
+                    None => Self::Unicast(global.into()),
+                })
             }
-            // Extended next hops allow IPv4 unicast NLRI with an IPv6
-            // next hop, optionally followed by its link-local address.
-            Ipv4Unicast | Ipv6Unicast => {
-                match len {
-                    4 if afisafi == Ipv4Unicast => {
-                        NextHop::Unicast(parse_ipv4addr(parser)?.into())
-                    }
-                    16 => NextHop::Unicast(parse_ipv6addr(parser)?.into()),
-                    32 => NextHop::Ipv6LL{
-                        global: parse_ipv6addr(parser)?,
-                        link_local: parse_ipv6addr(parser)?,
-                    },
-                    _ => error!()
-                }
-            }
-            Ipv6Multicast => {
-                match len {
-                    16 => NextHop::Unicast(parse_ipv6addr(parser)?.into()),
-                    _ => error!()
-                }
-            }
-            // RFC4684: the nexthop for MPLS can be of the other AFI than the
-            // NLRI themselves are.
-            // RFC7432: EVPN next hops are the IPv4 or IPv6 address of the PE.
-            Ipv4MplsUnicast | Ipv6MplsUnicast | L2VpnEvpn => {
-                match len {
-                    4 => NextHop::Unicast(parse_ipv4addr(parser)?.into()),
-                    16 => NextHop::Unicast(parse_ipv6addr(parser)?.into()),
-                    _ => error!()
-                }
-            }
-            Ipv4MplsVpnUnicast => {
-                match len {
-                    12 => NextHop::MplsVpnUnicast(
-                        RouteDistinguisher::parse(parser)?,
-                        parse_ipv4addr(parser)?.into()
-                    ),
-                    _ => error!()
-                }
-            }
-            Ipv6MplsVpnUnicast => {
-                match len {
-                    24 => NextHop::MplsVpnUnicast(
-                        RouteDistinguisher::parse(parser)?,
-                        parse_ipv6addr(parser)?.into()
-                    ),
-                    _ => error!()
-                }
-            }
+            _ => Err(ParseError::Unsupported),
+        }
+    }
 
-            Ipv4FlowSpec | Ipv6FlowSpec => Self::Empty,
-
-            AfiSafi::Unsupported(_, _) => error!()
-        };
-
-        Ok(res)
+    /// Parses a next hop prefixed with a Route Distinguisher.
+    fn parse_vpn<R: Octets>(
+        parser: &mut Parser<'_, R>,
+        len: u8,
+        allowed: &[u8],
+    ) -> Result<Self, ParseError> {
+        if !allowed.contains(&len) {
+            return Err(ParseError::Unsupported);
+        }
+        let rd = RouteDistinguisher::parse(parser)?;
+        match len {
+            12 => Ok(Self::MplsVpnUnicast(rd, parse_ipv4addr(parser)?.into())),
+            24 => Ok(Self::MplsVpnUnicast(rd, parse_ipv6addr(parser)?.into())),
+            48 => {
+                // The second RD and link-local address have no
+                // representation in `NextHop`. VPN next hops resolve via
+                // the global address, so only that one is kept.
+                let global = parse_ipv6addr(parser)?;
+                parser.advance(24)?;
+                Ok(Self::MplsVpnUnicast(rd, global.into()))
+            }
+            _ => Err(ParseError::Unsupported),
+        }
     }
 
     pub fn skip<R: Octets>(parser: &mut Parser<'_, R>)
@@ -169,6 +215,17 @@ impl NextHop {
         parser.advance(len.into())?;
         Ok(())
     }
+}
+
+
+/// Returns `addr` if it is a link-local address.
+///
+/// RFC 2545 section 3 only allows a link-local address in the second half of
+/// a 32-byte next hop. Implementations are known to send other values there
+/// (e.g. the unspecified address), so anything else is ignored rather than
+/// treated as an error, leaving just the global address.
+fn link_local(addr: Ipv6Addr) -> Option<Ipv6Addr> {
+    addr.is_unicast_link_local().then_some(addr)
 }
 
 

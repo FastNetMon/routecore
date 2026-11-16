@@ -173,7 +173,7 @@ where
         -> Result<(), ComposeError>
     {
         if let Some(ref mut a) = self.announcements.as_mut() {
-            a.set_nexthop_ll_addr(addr);
+            a.set_nexthop_ll_addr(addr)?;
         } else {
             let nexthop = NextHop::Ipv6LL{global: Ipv6Addr::from(0), link_local: addr};
             self.announcements =
@@ -848,16 +848,31 @@ impl<A: AfiSafiNlri + NlriCompose> MpReachNlriBuilder<A> {
         Ok(())
     }
 
-    pub fn set_nexthop_ll_addr(&mut self, addr: Ipv6Addr) {
-        match self.nexthop {
-            NextHop::Unicast(IpAddr::V6(a)) => {
-                self.nexthop = NextHop::Ipv6LL{global: a, link_local: addr};
+    /// Sets the link-local address of an IPv6 next hop.
+    ///
+    /// The global address of the current next hop is kept. If the current
+    /// next hop is not an IPv6 one, such as the IPv4 placeholder a builder
+    /// for an IPv4 family starts with, the global address is left
+    /// unspecified until set via [`Self::set_nexthop`].
+    ///
+    /// Fails for next hops that cannot carry a link-local address.
+    pub fn set_nexthop_ll_addr(&mut self, addr: Ipv6Addr)
+        -> Result<(), ComposeError>
+    {
+        let global = match self.nexthop {
+            NextHop::Unicast(IpAddr::V6(a))
+            | NextHop::Multicast(IpAddr::V6(a)) => a,
+            NextHop::Ipv6LL{global, ..} => global,
+            NextHop::Unicast(IpAddr::V4(_))
+            | NextHop::Multicast(IpAddr::V4(_)) => Ipv6Addr::UNSPECIFIED,
+            NextHop::MplsVpnUnicast(..)
+            | NextHop::Empty
+            | NextHop::Unimplemented(_) => {
+                return Err(ComposeError::IllegalCombination);
             }
-            NextHop::Ipv6LL{global, ..} => {
-                self.nexthop = NextHop::Ipv6LL{global, link_local: addr};
-            }
-            _ => unreachable!()
-        }
+        };
+        self.nexthop = NextHop::Ipv6LL{global, link_local: addr};
+        Ok(())
     }
 
 

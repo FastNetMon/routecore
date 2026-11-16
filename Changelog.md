@@ -7,13 +7,45 @@ Released yyyy-mm-dd.
 
 ## Breaking changes
 
+* The next hop of an IPv4 family carried in MP_REACH_NLRI can now be an IPv6
+  one (RFC 8950). `UpdateMessage::mp_next_hop`, `find_next_hop` (including
+  for `Ipv4Unicast`) and `NextHop::parse` return `NextHop::Unicast` with an
+  IPv6 address or `NextHop::Ipv6LL` for such routes, where they failed with
+  `ParseError::Unsupported` before. Code that assumes an IPv4 next hop for
+  IPv4 NLRI needs to handle these. With `serde`, such a next hop serialises
+  as `ipv6Unicast` or `ipv6LL`.
+* In a 32-byte next hop, the second address is only kept if it is link-local.
+  Otherwise the next hop is returned as `NextHop::Unicast` holding the global
+  address, instead of as `NextHop::Ipv6LL`.
+* `NextHop::new` returns `NextHop::Unicast` for the multicast families, the
+  same variant that parsing yields for them.
+* `MpReachNlriBuilder::set_nexthop_ll_addr` returns a `Result`.
+
 ## Bug fixes
 
 * Accept 16-byte and 32-byte IPv6 next hops for IPv4 unicast MP_REACH_NLRI.
 * Validate complete MP_REACH_NLRI values when parsing UPDATEs, while preserving
   next-hop-only stored attributes and ADD-PATH serialization.
+* `set_nexthop_ll_addr` on an UPDATE builder for an IPv4 family no longer
+  panics.
 
 ## New
+
+* RFC 8950 Extended Next Hop Encoding: IPv6 next hops (16 or 32 bytes) for
+  IPv4 unicast, multicast and labeled unicast, and RD-prefixed IPv6 next hops
+  (24 or 48 bytes) for VPN-IPv4.
+* `SessionConfig::restrict_extended_next_hop` limits IPv6 next hops for IPv4
+  NLRI to the families for which the capability was negotiated. A
+  `SessionConfig` made from a `NegotiatedConfig` is restricted to the
+  families both peers advertised; `SessionConfig::modern()` and `legacy()`
+  remain permissive.
+* `OpenBuilder::add_extended_next_hop` and `extended_next_hop_ids` on
+  `OpenMessage` and `Capabilities`.
+* `BgpConfig::extended_next_hop` selects the families for which the FSM
+  advertises the Extended Next Hop Encoding capability. None by default.
+* The 32-byte next hop is accepted for IPv6 multicast and IPv6 labeled
+  unicast, and the 48-byte one for VPN-IPv6. For the 48-byte form only the
+  Route Distinguisher and global address are kept.
 
 ## Other changes
 

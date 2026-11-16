@@ -604,6 +604,9 @@ impl<Octs: Octets> UpdateMessage<Octs> {
     }
 
     /// Returns NextHop information from the MP_REACH_NLRI, if any.
+    ///
+    /// For the IPv4 families of RFC 8950 this can be an IPv6 next hop:
+    /// `NextHop::Unicast` with an IPv6 address, or `NextHop::Ipv6LL`.
     pub fn mp_next_hop(&self) -> Result<Option<NextHop>, ParseError> {
         if let Some(pa) = self.unchecked_path_attributes().find(|pa|
             pa.type_code() == 14
@@ -633,6 +636,13 @@ impl<Octs: Octets> UpdateMessage<Octs> {
 
     }
 
+    /// Returns the next hop for the announcements of `afi_safi`.
+    ///
+    /// The address family of the next hop does not need to match that of
+    /// `afi_safi`. With the Extended Next Hop Encoding of RFC 8950, IPv4
+    /// families carried in MP_REACH_NLRI (including
+    /// [`AfiSafiType::Ipv4Unicast`]) can have an IPv6 next hop, returned as
+    /// `NextHop::Unicast` with an IPv6 address or as `NextHop::Ipv6LL`.
     pub fn find_next_hop(&self, afi_safi: AfiSafiType)
         -> Result<NextHop, ParseError>
     {
@@ -981,7 +991,17 @@ impl<Octs: Octets> UpdateMessage<Octs> {
                             ));
                         }
                         mp_reach_afisafi = Some(afisafi);
-                        NextHop::skip(&mut tmp_parser)?;
+                        let nh_len = tmp_parser.parse_u8()?;
+                        if NextHop::is_extended_len(afisafi, nh_len)
+                            && !session_config
+                                .extended_next_hop_allowed(afisafi)
+                        {
+                            return Err(ParseError::form_error(
+                                "MP_REACH_NLRI IPv6 next hop for IPv4 \
+                                family was not negotiated"
+                            ));
+                        }
+                        tmp_parser.advance(nh_len.into())?;
                         tmp_parser.advance(1)?;
                         has_mp_announcements = tmp_parser.remaining() > 0;
                     }
@@ -1131,6 +1151,7 @@ pub struct SessionConfig {
     addpath_fams: SessionAddpaths,
     extended_messages: bool,
     mp_fams: Option<HashSet<AfiSafiType>>,
+    extended_nh_fams: Option<HashSet<AfiSafiType>>,
 }
 
 /// Configuration parameters (state) to parse an individual UPDATE message.
@@ -1316,6 +1337,7 @@ impl SessionConfig {
             addpath_fams: SessionAddpaths::new(),
             extended_messages: false,
             mp_fams: None,
+            extended_nh_fams: None,
         }
     }
 
@@ -1327,6 +1349,7 @@ impl SessionConfig {
             addpath_fams: SessionAddpaths::new(),
             extended_messages: false,
             mp_fams: None,
+            extended_nh_fams: None,
         }
     }
 
@@ -1368,6 +1391,36 @@ impl SessionConfig {
     /// Returns the strict negotiated family set, if one is configured.
     pub fn mp_families(&self) -> Option<impl Iterator<Item = AfiSafiType> + '_> {
         self.mp_fams
+            .as_ref()
+            .map(|families| families.iter().copied())
+    }
+
+    /// Restricts IPv6 next hops for IPv4 NLRI to the given families.
+    ///
+    /// The families are the IPv4 AFI/SAFIs for which both peers advertised
+    /// the Extended Next Hop Encoding capability with an IPv6 next hop (RFC
+    /// 8950 section 4). An UPDATE carrying an IPv6 next hop for any other
+    /// IPv4 family then fails to parse.
+    pub fn restrict_extended_next_hop<I>(&mut self, families: I)
+    where
+        I: IntoIterator<Item = AfiSafiType>,
+    {
+        self.extended_nh_fams = Some(families.into_iter().collect());
+    }
+
+    /// Returns whether an IPv6 next hop is valid for this IPv4 family.
+    /// Standalone modern/legacy configs remain permissive for file parsing.
+    pub fn extended_next_hop_allowed(&self, family: AfiSafiType) -> bool {
+        self.extended_nh_fams
+            .as_ref()
+            .is_none_or(|families| families.contains(&family))
+    }
+
+    /// Returns the strict Extended Next Hop family set, if one is configured.
+    pub fn extended_next_hop_families(
+        &self,
+    ) -> Option<impl Iterator<Item = AfiSafiType> + '_> {
+        self.extended_nh_fams
             .as_ref()
             .map(|families| families.iter().copied())
     }
