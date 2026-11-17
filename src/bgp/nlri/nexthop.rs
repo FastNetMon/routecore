@@ -95,19 +95,22 @@ impl NextHop {
 
         let res = match afisafi {
 
-            Ipv4Unicast |
-                Ipv4Multicast |
+            Ipv4Multicast |
                 Ipv4RouteTarget |
-                L2VpnVpls |
-                L2VpnEvpn
+                L2VpnVpls
             => {
                 match len {
                     4 => NextHop::Unicast(parse_ipv4addr(parser)?.into()),
                     _ => error!()
                 }
             }
-            Ipv6Unicast => {
+            // Extended next hops allow IPv4 unicast NLRI with an IPv6
+            // next hop, optionally followed by its link-local address.
+            Ipv4Unicast | Ipv6Unicast => {
                 match len {
+                    4 if afisafi == Ipv4Unicast => {
+                        NextHop::Unicast(parse_ipv4addr(parser)?.into())
+                    }
                     16 => NextHop::Unicast(parse_ipv6addr(parser)?.into()),
                     32 => NextHop::Ipv6LL{
                         global: parse_ipv6addr(parser)?,
@@ -124,7 +127,8 @@ impl NextHop {
             }
             // RFC4684: the nexthop for MPLS can be of the other AFI than the
             // NLRI themselves are.
-            Ipv4MplsUnicast | Ipv6MplsUnicast => {
+            // RFC7432: EVPN next hops are the IPv4 or IPv6 address of the PE.
+            Ipv4MplsUnicast | Ipv6MplsUnicast | L2VpnEvpn => {
                 match len {
                     4 => NextHop::Unicast(parse_ipv4addr(parser)?.into()),
                     16 => NextHop::Unicast(parse_ipv6addr(parser)?.into()),
@@ -172,6 +176,98 @@ impl NextHop {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    #[test]
+    fn evpn_next_hops() {
+        for ip in ["192.0.2.1", "2001:db8::1"] {
+            let ip: IpAddr = ip.parse().unwrap();
+            let bytes = match ip {
+                IpAddr::V4(ip) => ip.octets().to_vec(),
+                IpAddr::V6(ip) => ip.octets().to_vec(),
+            };
+            let mut wire = vec![bytes.len() as u8];
+            wire.extend_from_slice(&bytes);
+            wire.push(0xab);
+            let mut parser = Parser::from_ref(&wire);
+            assert_eq!(NextHop::parse(&mut parser, AfiSafi::L2VpnEvpn),
+                Ok(NextHop::Unicast(ip)));
+            assert_eq!(parser.parse_u8().unwrap(), 0xab);
+        }
+    }
+
+    #[test]
+    fn evpn_invalid_next_hops() {
+        for len in 0..=255u8 {
+            if [4, 16].contains(&len) {
+                for available in 0..usize::from(len) {
+                    let mut wire = vec![len];
+                    wire.resize(1 + available, 0);
+                    assert_eq!(
+                        NextHop::parse(&mut Parser::from_ref(&wire), AfiSafi::L2VpnEvpn),
+                        Err(ParseError::ShortInput),
+                    );
+                }
+            } else {
+                let mut wire = vec![len];
+                wire.resize(1 + usize::from(len), 0);
+                assert_eq!(
+                    NextHop::parse(&mut Parser::from_ref(&wire), AfiSafi::L2VpnEvpn),
+                    Err(ParseError::Unsupported),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ipv4_unicast_next_hop_lengths() {
+        let global: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let link_local: Ipv6Addr = "fe80::1".parse().unwrap();
+        let cases = [
+            (vec![192, 0, 2, 1], NextHop::Unicast(Ipv4Addr::new(192, 0, 2, 1).into())),
+            (global.octets().to_vec(), NextHop::Unicast(global.into())),
+            (
+                [global.octets(), link_local.octets()].concat(),
+                NextHop::Ipv6LL { global, link_local },
+            ),
+        ];
+        for (bytes, expected) in cases {
+            let mut wire = vec![bytes.len() as u8];
+            wire.extend_from_slice(&bytes);
+            wire.push(0xab);
+            let mut parser = Parser::from_ref(&wire);
+            assert_eq!(NextHop::parse(&mut parser, AfiSafi::Ipv4Unicast), Ok(expected));
+            assert_eq!(parser.parse_u8().unwrap(), 0xab);
+        }
+    }
+
+    #[test]
+    fn ipv4_unicast_invalid_next_hops() {
+        for len in 0..=255u8 {
+            if [4, 16, 32].contains(&len) {
+                continue;
+            }
+            let mut wire = vec![len];
+            wire.resize(1 + usize::from(len), 0);
+            assert_eq!(
+                NextHop::parse(&mut Parser::from_ref(&wire), AfiSafi::Ipv4Unicast),
+                Err(ParseError::Unsupported),
+            );
+        }
+        for len in [4, 16, 32] {
+            for available in 0..len {
+                let mut wire = vec![len as u8];
+                wire.resize(1 + available, 0);
+                assert_eq!(
+                    NextHop::parse(&mut Parser::from_ref(&wire), AfiSafi::Ipv4Unicast),
+                    Err(ParseError::ShortInput),
+                );
+            }
+        }
+        assert_eq!(
+            NextHop::parse(&mut Parser::from_ref(&&[4, 192, 0, 2, 1][..]), AfiSafi::Ipv6Unicast),
+            Err(ParseError::Unsupported),
+        );
+    }
 
     #[cfg(feature = "serde")]
     #[test]

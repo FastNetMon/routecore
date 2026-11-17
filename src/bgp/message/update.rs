@@ -1155,6 +1155,25 @@ impl PduParseInfo {
         Self { four_octet_asns: FourOctetAsns(false), pdu_addpaths: PduAddpaths::default() }
     }
 
+    /// Creates parse info from the ASN and independent per-PDU ADD-PATH flags.
+    ///
+    /// Useful when restoring context persisted alongside raw path attributes.
+    pub fn from_flags(
+        four_octet_asns: bool,
+        conventional_addpath: bool,
+        mp_reach_addpath: bool,
+        mp_unreach_addpath: bool,
+    ) -> Self {
+        Self {
+            four_octet_asns: FourOctetAsns(four_octet_asns),
+            pdu_addpaths: PduAddpaths {
+                conventional: conventional_addpath,
+                mp_reach: mp_reach_addpath,
+                mp_unreach: mp_unreach_addpath,
+            },
+        }
+    }
+
     /// Creates a `PduParseInfo` from a `SessionConfig` and address families.
     ///
     /// This constructor takes two optional address families, describing the
@@ -2337,6 +2356,81 @@ mod tests {
             AfiSafiType::Ipv4Multicast
         );
         assert_eq!(upd.mp_withdrawals().unwrap().iter().count(), 1);
+    }
+
+    #[test]
+    fn ipv4_unicast_with_extended_next_hop() {
+        let global: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let link_local: Ipv6Addr = "fe80::1".parse().unwrap();
+        for with_link_local in [false, true] {
+            let mut reach = vec![0, 1, 1, if with_link_local { 32 } else { 16 }];
+            reach.extend_from_slice(&global.octets());
+            if with_link_local {
+                reach.extend_from_slice(&link_local.octets());
+            }
+            // Reserved octet followed by IPv4 NLRI 192.0.2.0/24.
+            reach.extend_from_slice(&[0, 24, 192, 0, 2]);
+            let mut attrs = vec![
+                0x40, 1, 1, 0, // ORIGIN: IGP
+                0x40, 2, 0,    // Empty AS_PATH
+                0x80, 14, reach.len() as u8,
+            ];
+            attrs.extend_from_slice(&reach);
+            let mut wire = vec![0xff; 16];
+            wire.extend_from_slice(&((23 + attrs.len()) as u16).to_be_bytes());
+            wire.extend_from_slice(&[2, 0, 0]); // UPDATE, no withdrawals
+            wire.extend_from_slice(&(attrs.len() as u16).to_be_bytes());
+            wire.extend_from_slice(&attrs);
+
+            let upd = UpdateMessage::from_octets(&wire, &SessionConfig::modern())
+                .unwrap();
+            let expected = if with_link_local {
+                NextHop::Ipv6LL { global, link_local }
+            } else {
+                NextHop::Unicast(global.into())
+            };
+            assert_eq!(upd.mp_next_hop().unwrap(), Some(expected));
+            assert_eq!(upd.find_next_hop(AfiSafiType::Ipv4Unicast).unwrap(), expected);
+            let announcements: Vec<_> = upd.announcements().unwrap()
+                .map(|nlri| nlri.unwrap()).collect();
+            assert_eq!(announcements.len(), 1);
+            assert_eq!(announcements[0].afi_safi(), AfiSafiType::Ipv4Unicast);
+        }
+    }
+
+    #[test]
+    fn evpn_with_ipv6_next_hop() {
+        let next_hop: Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let mut reach = vec![0, 25, 70, 16];
+        reach.extend_from_slice(&next_hop.octets());
+        reach.push(0); // Reserved octet.
+        // Inclusive Multicast Ethernet Tag route: RD, Ethernet Tag ID,
+        // and originating router's IPv4 address.
+        reach.extend_from_slice(&[
+            3, 17, 0, 0, 0, 0, 0, 0, 0, 1,
+            0, 0, 0, 0, 32, 192, 0, 2, 1,
+        ]);
+        let mut attrs = vec![
+            0x40, 1, 1, 0, // ORIGIN: IGP
+            0x40, 2, 0,    // Empty AS_PATH
+            0x80, 14, reach.len() as u8,
+        ];
+        attrs.extend_from_slice(&reach);
+        let mut wire = vec![0xff; 16];
+        wire.extend_from_slice(&((23 + attrs.len()) as u16).to_be_bytes());
+        wire.extend_from_slice(&[2, 0, 0]); // UPDATE, no withdrawals.
+        wire.extend_from_slice(&(attrs.len() as u16).to_be_bytes());
+        wire.extend_from_slice(&attrs);
+
+        let upd = UpdateMessage::from_octets(&wire, &SessionConfig::modern())
+            .unwrap();
+        let expected = NextHop::Unicast(next_hop.into());
+        assert_eq!(upd.mp_next_hop().unwrap(), Some(expected));
+        assert_eq!(upd.find_next_hop(AfiSafiType::L2VpnEvpn).unwrap(), expected);
+        let announcements: Vec<_> = upd.announcements().unwrap()
+            .map(|nlri| nlri.unwrap()).collect();
+        assert_eq!(announcements.len(), 1);
+        assert_eq!(announcements[0].afi_safi(), AfiSafiType::L2VpnEvpn);
     }
 
     #[test]
