@@ -17,7 +17,8 @@ use crate::bgp::communities::{
 use crate::bgp::message::MsgType;
 use crate::bgp::path_attributes::{
     AggregatorInfo, PathAttributes, PathAttributeType,
-    WireformatPathAttribute, UncheckedPathAttributes, validate_mp_unreach,
+    WireformatPathAttribute, UncheckedPathAttributes, validate_mp_reach,
+    validate_mp_unreach,
 };
 use crate::bgp::types::{
     LocalPref, MultiExitDisc, NextHop, OriginType, AfiSafiType, AddpathDirection,
@@ -1032,8 +1033,10 @@ impl<Octs: Octets> UpdateMessage<Octs> {
                 }
             }
             for pa in UncheckedPathAttributes::from_parser(pas_parser) {
-                if pa.type_code() == 15 {
-                    validate_mp_unreach(&mut pa.value_into_parser(), ppi)?;
+                match pa.type_code() {
+                    14 => validate_mp_reach(&mut pa.value_into_parser(), ppi)?,
+                    15 => validate_mp_unreach(&mut pa.value_into_parser(), ppi)?,
+                    _ => {}
                 }
             }
         }
