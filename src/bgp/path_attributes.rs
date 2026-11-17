@@ -36,6 +36,25 @@ fn validate_mp_nlri<Octs: Octets>(
     Ok(())
 }
 
+/// Validates a complete MP_REACH_NLRI value from an UPDATE, including its NLRI.
+/// Stored path attributes may retain only the next hop and use a separate
+/// validator in `MpReachNextHop`.
+pub(crate) fn validate_mp_reach<Octs: Octets>(
+    parser: &mut Parser<'_, Octs>,
+    ppi: PduParseInfo,
+) -> Result<(), ParseError> {
+    let afi = parser.parse_u16_be()?;
+    let safi = parser.parse_u8()?;
+    let afisafi = AfiSafiType::from((afi, safi));
+    NextHop::parse(parser, afisafi)?;
+    if parser.parse_u8()? != 0 {
+        return Err(ParseError::form_error(
+            "MP_REACH_NLRI reserved byte is non-zero"
+        ));
+    }
+    validate_mp_nlri(*parser, afisafi, ppi.mp_reach_addpath())
+}
+
 pub(crate) fn validate_mp_unreach<Octs: Octets>(
     parser: &mut Parser<'_, Octs>,
     ppi: PduParseInfo,
@@ -1535,6 +1554,7 @@ impl Attribute for MpReachNextHop {
         // This attribute retains only the next hop, just like parse below.
         // Trailing reserved/NLRI bytes belong to the full MP_REACH attribute
         // and may require ADD-PATH context unavailable to stored attributes.
+        // UpdateMessage::parse validates the full value with validate_mp_reach.
         Ok(())
     }
 
@@ -1637,16 +1657,7 @@ impl<A: Clone + NlriCompose> Attribute for MpReachNlriBuilder<A> {
         parser: &mut Parser<'_, Octs>,
         ppi: PduParseInfo
     ) -> Result<(), ParseError> {
-        let afi = parser.parse_u16_be()?;
-        let safi = parser.parse_u8()?;
-        let afisafi = AfiSafiType::from((afi, safi));
-        NextHop::parse(parser, afisafi)?;
-        if parser.parse_u8()? != 0 {
-            return Err(ParseError::form_error(
-                "MP_REACH_NLRI reserved byte is non-zero"
-            ));
-        }
-        validate_mp_nlri(*parser, afisafi, ppi.mp_reach_addpath())
+        validate_mp_reach(parser, ppi)
         
          
         /*
