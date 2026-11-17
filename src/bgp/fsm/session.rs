@@ -430,6 +430,10 @@ impl<C: BgpConfig + Send> Session<C> {
             openbuilder.add_mp(*afisafi);
         }
 
+        for afisafi in self.config.extended_next_hop() {
+            openbuilder.add_extended_next_hop(afisafi);
+        }
+
         for fam in self.config.addpath() {
             openbuilder.add_addpath(fam, AddpathDirection::SendReceive);
         }
@@ -2170,6 +2174,15 @@ pub trait BgpConfig {
     fn extended_messages(&self) -> bool {
         true
     }
+
+    /// Returns the IPv4 families to advertise the Extended Next Hop Encoding
+    /// capability (RFC 8950) for, i.e. to accept IPv6 next hops for.
+    ///
+    /// None by default. UPDATEs carrying an IPv6 next hop for an IPv4 family
+    /// are only accepted if both peers advertised the capability for it.
+    fn extended_next_hop(&self) -> Vec<AfiSafiType> {
+        vec![]
+    }
 }
 
 //------------ BasicConfig ---------------------------------------------------
@@ -2316,6 +2329,13 @@ impl From<&NegotiatedConfig> for SessionConfig {
         if mp_fams_intersect.contains(&AfiSafiType::Ipv4Unicast) {
             session_config.set_ipv4unicast_in_mp();
         }
+        // RFC 8950 section 4: IPv6 next hops for IPv4 NLRI need the
+        // Extended Next Hop Encoding capability for that family.
+        let local_enh = local_caps.extended_next_hop_ids().collect::<std::collections::HashSet<_>>();
+        let remote_enh = remote_caps.extended_next_hop_ids().collect::<std::collections::HashSet<_>>();
+        session_config.restrict_extended_next_hop(
+            local_enh.intersection(&remote_enh).copied()
+        );
         for ap in value.addpath.iter() {
             session_config.add_famdir(*ap);
         }
@@ -2584,6 +2604,25 @@ mod negotiated_addpaths_tests {
 
         negotiated.remote_capabilities = vec![6, 0];
         assert!(SessionConfig::from(&negotiated).extended_messages());
+    }
+
+    #[test]
+    fn extended_next_hop_requires_both_capabilities() {
+        // Extended Next Hop Encoding: IPv4 unicast with IPv6 next hop.
+        let enh = vec![5, 6, 0, 1, 0, 1, 0, 2];
+        let family = AfiSafiType::Ipv4Unicast;
+        let mut negotiated = NegotiatedConfig::dummy();
+        assert!(!SessionConfig::from(&negotiated)
+            .extended_next_hop_allowed(family));
+
+        negotiated.local_capabilities = enh.clone();
+        assert!(!SessionConfig::from(&negotiated)
+            .extended_next_hop_allowed(family));
+
+        negotiated.remote_capabilities = enh;
+        let sc = SessionConfig::from(&negotiated);
+        assert!(sc.extended_next_hop_allowed(family));
+        assert!(!sc.extended_next_hop_allowed(AfiSafiType::Ipv4Multicast));
     }
 
     #[test]

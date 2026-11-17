@@ -248,6 +248,14 @@ impl<Octs: Octets> OpenMessage<Octs> {
         })
     }
 
+    /// Returns the IPv4 families for which this message lists an IPv6 next
+    /// hop in an Extended Next Hop Encoding capability (RFC 8950).
+    pub fn extended_next_hop_ids(
+        &self,
+    ) -> impl Iterator<Item = AfiSafiType> + '_ {
+        self.capabilities().flat_map(|c| extended_next_hop_ids(&c))
+    }
+
     /// Returns the Software Version capability string.
     pub fn get_software_version(&self) -> Option<String> {
         self.capabilities().find(|c|
@@ -642,6 +650,39 @@ impl Capabilities<'_> {
         })
     }
 
+    /// Returns the IPv4 families for which an IPv6 next hop is listed in an
+    /// Extended Next Hop Encoding capability (RFC 8950).
+    pub fn extended_next_hop_ids(
+        &self,
+    ) -> impl Iterator<Item = AfiSafiType> + '_ {
+        self.iter().flat_map(|c| extended_next_hop_ids(&c))
+    }
+
+}
+
+/// Returns the IPv4 families with an IPv6 next hop from a capability.
+///
+/// Yields nothing for capabilities other than Extended Next Hop Encoding.
+/// The value holds (NLRI AFI, NLRI SAFI, Next Hop AFI) tuples of two octets
+/// each; RFC 8950 only defines NLRI AFI 1 with Next Hop AFI 2.
+fn extended_next_hop_ids<Octs: Octets>(
+    cap: &Capability<Octs>,
+) -> Vec<AfiSafiType> {
+    if cap.typ() != CapabilityType::ExtendedNextHop {
+        return Vec::new();
+    }
+    cap.value()
+        .as_chunks::<6>()
+        .0
+        .iter()
+        .filter_map(|t| {
+            let afi = u16::from_be_bytes([t[0], t[1]]);
+            let safi = u16::from_be_bytes([t[2], t[3]]);
+            let nh_afi = u16::from_be_bytes([t[4], t[5]]);
+            let safi = u8::try_from(safi).ok()?;
+            (afi == 1 && nh_afi == 2).then(|| (afi, safi).into())
+        })
+        .collect()
 }
 
 impl<'a, Ref: Octets> Iterator for CapabilitiesIter<'a, Ref> {
@@ -868,6 +909,19 @@ impl<Target: OctetsBuilder + AsMut<[u8]>> OpenBuilder<Target> {
         let mut s = vec![0x01, 0x04];
         s.extend_from_slice(&afi.to_be_bytes()[..]);
         s.extend_from_slice(&[0x00, safi]);
+
+        self.add_capability(Capability::<Vec<u8>>::for_slice(s));
+    }
+
+    /// Adds an Extended Next Hop Encoding capability (RFC 8950) announcing
+    /// that IPv6 next hops can be received for the IPv4 family `afisafi`.
+    pub fn add_extended_next_hop(&mut self, afisafi: AfiSafiType) {
+        // code 5, length 6
+        // 2 bytes NLRI AFI, 2 bytes NLRI SAFI, 2 bytes Next Hop AFI (IPv6)
+        let (afi, safi) = afisafi.into();
+        let mut s = vec![0x05, 0x06];
+        s.extend_from_slice(&afi.to_be_bytes()[..]);
+        s.extend_from_slice(&[0x00, safi, 0x00, 0x02]);
 
         self.add_capability(Capability::<Vec<u8>>::for_slice(s));
     }
